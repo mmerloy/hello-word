@@ -1,0 +1,309 @@
+№1
+struct MinMax GetMinMax(int *array, unsigned int begin, unsigned int end) {
+  struct MinMax min_max;
+  min_max.min = INT_MAX;
+  min_max.max = INT_MIN;
+
+  for (int i = begin; i < end; i++)
+  {
+    if (*(array + i) < min_max.min)
+        min_max.min = *(array + i);
+    if (*(array + i) > min_max.max)
+        min_max.max = *(array + i);
+  }
+
+  return min_max;
+}
+
+
+bash-4.4$ gcc sequential_min_max.c find_min_max.c utils.c -o find_min_max
+bash-4.4$ ./find_min_max 5 5
+arr[0] = 590011675
+arr[1] = 99788765
+arr[2] = 2131925610
+arr[3] = 171864072
+arr[4] = 317159276
+min: 99788765
+max: 2131925610
+
+№2
+
+#include <ctype.h>
+#include <limits.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <sys/time.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
+#include <getopt.h>
+
+#include "find_min_max.h"
+#include "utils.h"
+
+int main(int argc, char **argv) {
+  int seed = -1;
+  int array_size = -1;
+  int pnum = -1;
+  bool with_files = false;
+
+  while (true) {
+    int current_optind = optind ? optind : 1;
+
+    static struct option options[] = {{"seed", required_argument, 0, 0},
+                                      {"array_size", required_argument, 0, 0},
+                                      {"pnum", required_argument, 0, 0},
+                                      {"by_files", no_argument, 0, 'f'},
+                                      {0, 0, 0, 0}};
+
+    int option_index = 0;
+    int c = getopt_long(argc, argv, "f", options, &option_index);
+
+    if (c == -1) break;
+
+    switch (c) {
+      case 0:
+        switch (option_index) {
+          case 0:
+            seed = atoi(optarg);
+            if (seed <= 0) {
+                printf("seed is a positive number\n");
+                return 1;
+            }
+            break;
+          case 1:
+            array_size = atoi(optarg);
+            if (array_size <= 0) {
+                printf("array_size is a positive number\n");
+                return 1;
+            }
+            break;
+          case 2:
+            pnum = atoi(optarg);
+            if (array_size <= 0) {
+                printf("array_size is a positive number\n");
+                return 1;
+            }
+            break;
+          case 3:
+            with_files = true;
+            break;
+
+          defalut:
+            printf("Index %d is out of options\n", option_index);
+        }
+        break;
+      case 'f':
+        with_files = true;
+        break;
+
+      case '?':
+        break;
+
+      default:
+        printf("getopt returned character code 0%o?\n", c);
+    }
+  }
+
+  if (optind < argc) {
+    printf("Has at least one no option argument\n");
+    return 1;
+  }
+
+  if (seed == -1 || array_size == -1 || pnum == -1) {
+    printf("Usage: %s --seed \"num\" --array_size \"num\" --pnum \"num\" \n",
+           argv[0]);
+    return 1;
+  }
+
+  int *array = malloc(sizeof(int) * array_size);
+  GenerateArray(array, array_size, seed);
+  int active_child_processes = 0;
+
+  struct timeval start_time;
+  gettimeofday(&start_time, NULL);
+
+  int len = array_size / pnum;
+  //pipefd[0] - чтение
+  //pipefd[1] - запись
+  int pipefd[2];
+
+  if (pipe(pipefd) == -1) //возвращает -1 в случае ошибки
+  {
+      printf("Error occured while using pipe");
+      return 1;
+  }
+
+  for (int i = 0; i < pnum; i++) {
+    pid_t child_pid = fork();
+    if (child_pid >= 0) {
+        active_child_processes += 1;
+        if (child_pid == 0) { //если процесс успешно создан (в дочерний процесс возвращается 0, а в родительский ID ребенка)
+            struct MinMax min_max;
+            if (i != pnum - 1)
+            {
+                min_max = GetMinMax(array, i * len, (i + 1) * len); 
+
+            }
+            else 
+            {
+                min_max = GetMinMax(array, i * len, array_size);
+            }
+            if (with_files) {
+                FILE *fp;
+                fp = fopen ("file.txt", "a"); //fopen(название файла, режим открытия) 
+                                              //"a" - дописывает информацию к концу файла
+                if (fp == 0)
+                {
+                    printf( "Error while opening file\n" );
+                    return 1;
+                }
+                else
+                {
+                    fwrite(&min_max, sizeof(struct MinMax), 1, fp); //fwrite(объект, размер объекта, кол-во объектов, поток куда надо записать)
+                }
+                fclose (fp); //закрыть файл
+            } else {
+                 write(pipefd[1], &min_max, sizeof(struct MinMax)); //записываем в канал для записи структура min_max и выделяем нужное количество байт
+            }
+            return 0;
+        }
+    } else {
+            printf("Fork failed!\n");
+            return 1;
+    }
+  }
+
+
+  while (active_child_processes > 0) 
+  {
+    close(pipefd[1]); //закрывает открытый канал для записи
+    wait(0); 
+    active_child_processes -= 1;
+  }
+
+  struct MinMax min_max;
+  min_max.min = INT_MAX;
+  min_max.max = INT_MIN;
+
+  for (int i = 0; i < pnum; i++) {
+    struct MinMax Min_Max;
+    if (with_files) {
+      FILE *fp = fopen("file.txt", "rb"); //открывает файл для чтения
+        if (fp == 0) //в случае ошибки
+        {
+            printf( "Error while opening file\n" );
+            return 1;
+        } else
+        {
+            fseek(fp, i * sizeof(struct MinMax), SEEK_SET); //fseek(поток, до куда, от куда) 
+                                                            //устанавливает указатель на нужную позицию начиная с начала файла
+            fread(&Min_Max, sizeof(struct MinMax), 1, fp);  //fread(объект, размер, количество, поток)
+        }
+        fclose(fp);
+    } else {
+        read(pipefd[0], &Min_Max, sizeof(struct MinMax));
+    }
+
+    if (Min_Max.min < min_max.min) min_max.min = Min_Max.min;
+    if (Min_Max.max > min_max.max) min_max.max = Min_Max.max;
+  }
+
+  struct timeval finish_time;
+  gettimeofday(&finish_time, NULL);
+
+  double elapsed_time = (finish_time.tv_sec - start_time.tv_sec) * 1000.0;
+  elapsed_time += (finish_time.tv_usec - start_time.tv_usec) / 1000.0;
+
+  free(array);
+
+  printf("Min: %d\n", min_max.min);
+  printf("Max: %d\n", min_max.max);
+  printf("Elapsed time: %fms\n", elapsed_time);
+  remove("file.txt");
+  fflush(NULL);
+  return 0;
+}
+
+№3
+CC=gcc
+CFLAGS=-I. #почему здесь точка?
+
+all: sequential_min_max parallel_min_max
+
+sequential_min_max : utils.o find_min_max.o utils.h find_min_max.h
+	$(CC) -o sequential_min_max find_min_max.o utils.o sequential_min_max.c $(CFLAGS)
+
+parallel_min_max : utils.o find_min_max.o utils.h find_min_max.h
+	$(CC) -o parallel_min_max utils.o find_min_max.o parallel_min_max.c $(CFLAGS)
+
+utils.o : utils.h
+	$(CC) -o utils.o -c utils.c $(CFLAGS)
+
+find_min_max.o : utils.h find_min_max.h
+	$(CC) -o find_min_max.o -c find_min_max.c $(CFLAGS)
+
+clean :
+	rm utils.o find_min_max.o sequential_min_max parallel_min_max
+  
+№4
+#include <ctype.h>
+#include <limits.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <sys/time.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
+#include <getopt.h>
+
+int main(int argc, char **argv)
+{
+    pid_t child_pit = fork();
+
+    if (child_pit == 0)
+    {
+        printf("Child process...\n");
+        execl("sequential_min_max", "", "1", "10", NULL);
+    }
+    
+    // Put the parent to sleep for 2 seconds--let the child finished executing 
+	wait(NULL);
+
+	printf( "Finished executing the parent process\n"
+	        " - the child won't get here--you will only see this once\n" );
+
+	return 0;
+}
+
+
+CC=gcc
+CFLAGS=-I. #почему здесь точка?
+
+all: sequential_min_max parallel_min_max exec
+
+sequential_min_max : utils.o find_min_max.o utils.h find_min_max.h
+	$(CC) -o sequential_min_max find_min_max.o utils.o sequential_min_max.c $(CFLAGS)
+
+parallel_min_max : utils.o find_min_max.o utils.h find_min_max.h
+	$(CC) -o parallel_min_max utils.o find_min_max.o parallel_min_max.c $(CFLAGS)
+
+exec : utils.o find_min_max.o utils.h find_min_max.h
+	$(CC) -o exec find_min_max.o utils.o exec.c $(CFLAGS)
+
+utils.o : utils.h
+	$(CC) -o utils.o -c utils.c $(CFLAGS)
+
+find_min_max.o : utils.h find_min_max.h
+	$(CC) -o find_min_max.o -c find_min_max.c $(CFLAGS)
+
+clean :
+	rm utils.o find_min_max.o sequential_min_max parallel_min_max
